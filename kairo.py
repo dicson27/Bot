@@ -1,6 +1,6 @@
 import sys
 import io
-import os # IMPORT ADICIONADO PARA LER VARIÁVEIS DA NUVEM
+import os
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
@@ -20,11 +20,11 @@ import threading
 from urllib.parse import urlparse, parse_qs
 
 # =============================================
-# CONFIGURAÇÕES
+# CONFIGURAÇÕES GERAIS
 # =============================================
-# TOKENS PROTEGIDOS (Puxa da nuvem ou usa os valores fixos localmente)
-TOKEN_TELEGRAM = os.environ.get("TOKEN_TELEGRAM", "8657147116:AAFBvWsufUo_smhPveTsog0IiUoim4tJTYc")
-CHAT_ID = os.environ.get("CHAT_ID", "938715543")
+# Mantido apenas para os seus testes locais (o sistema agora recebe dados dinâmicos)
+TOKEN_ADMIN = os.environ.get("TOKEN_TELEGRAM", "8657147116:AAFBvWsufUo_smhPveTsog0IiUoim4tJTYc")
+CHAT_ID_ADMIN = os.environ.get("CHAT_ID", "938715543")
 
 DURACAO = {
     "Futebol": 105, 
@@ -141,7 +141,6 @@ async def extrair_jogos_flashscore(data: datetime = None):
     print(f"\n🚀 Iniciando coleta para {data.strftime('%d/%m/%Y')}...")
     dados_por_esporte = {}
     async with async_playwright() as p:
-        # NAVEGADOR CONFIGURADO PARA RODAR INVISÍVEL NA NUVEM (headless=True) E SEM SANDBOX
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-setuid-sandbox"])
         context = await browser.new_context(viewport={"width": 1366, "height": 768})
         page = await context.new_page()
@@ -213,7 +212,7 @@ def extrair_todos_jogos_com_ia(dados_por_esporte):
     return todos_jogos
 
 # =============================================
-# 3. CÁLCULOS
+# 3. CÁLCULOS E EXCEL
 # =============================================
 def calcular_heatmap(jogos):
     janelas = [(datetime.strptime("00:00", "%H:%M") + timedelta(minutes=30 * i)).strftime("%H:%M") for i in range(48)]
@@ -252,9 +251,6 @@ def calcular_alertas(jogos, power_hours):
         except: continue
     return alertas
 
-# =============================================
-# 4. EXCEL MELHORADO (MAPA DE CALOR SEMÁFORO FORTE)
-# =============================================
 def formatar_aba_resumo(ws):
     ws.column_dimensions['A'].width = 25
     ws.column_dimensions['B'].width = 30
@@ -281,9 +277,9 @@ def formatar_aba_heatmap(ws):
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
     regra_cor = ColorScaleRule(
-        start_type='min', start_color='00B050',       # Verde Forte e Vibrante
-        mid_type='percentile', mid_value=50, mid_color='FFEB84',  # Amarelinho claro 
-        end_type='max', end_color='FF0000'            # Vermelho Puro 
+        start_type='min', start_color='00B050',
+        mid_type='percentile', mid_value=50, mid_color='FFEB84',
+        end_type='max', end_color='FF0000'
     )
     ws.conditional_formatting.add(f"B2:H{ws.max_row}", regra_cor)
 
@@ -299,9 +295,10 @@ def formatar_aba_power(ws):
                 cell.font = Font(bold=True, color="FFFFFF", size=11)
                 cell.fill = PatternFill(start_color="FFFF6600", end_color="FFFF6600", fill_type="solid")
 
-def gerar_excel(jogos, heatmap, power_hours, alertas, data: datetime = None):
+def gerar_excel(jogos, heatmap, power_hours, alertas, data: datetime = None, chat_id: str = ""):
     if data is None: data = datetime.now()
-    filename = f"Analise_Surebet_{data.strftime('%d_%m_%Y')}.xlsx"
+    # Adicionando o Chat ID no nome do arquivo para não misturar planilhas se múltiplos usuários pedirem ao mesmo tempo
+    filename = f"Analise_Surebet_{chat_id}_{data.strftime('%d_%m_%Y')}.xlsx"
     
     resumo = {
         "Info": [
@@ -344,16 +341,25 @@ def gerar_excel(jogos, heatmap, power_hours, alertas, data: datetime = None):
     return filename
 
 # =============================================
-# 5. TELEGRAM INTERNALS
+# 4. TELEGRAM INTERNALS (Agora Dinâmico)
 # =============================================
-def enviar_mensagem(texto):
-    requests.post(f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendMessage", data={"chat_id": CHAT_ID, "text": texto, "parse_mode": "Markdown"})
+def enviar_mensagem(texto, token, chat_id):
+    try:
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"})
+    except Exception as e:
+        print(f"Erro ao enviar mensagem: {e}")
 
-def enviar_arquivo(arquivo):
-    with open(arquivo, "rb") as f: requests.post(f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/sendDocument", data={"chat_id": CHAT_ID}, files={"document": f})
+def enviar_arquivo(arquivo, token, chat_id):
+    try:
+        with open(arquivo, "rb") as f: 
+            requests.post(f"https://api.telegram.org/bot{token}/sendDocument", data={"chat_id": chat_id}, files={"document": f})
+        # Remove o arquivo após o envio para não acumular lixo no servidor
+        os.remove(arquivo)
+    except Exception as e:
+        print(f"Erro ao enviar arquivo: {e}")
 
-async def rodar_analise(data: datetime):
-    enviar_mensagem(f"⏳ *Kairós Engine:* Iniciando varredura estratégica para {data.strftime('%d/%m/%Y')}...")
+async def rodar_analise(data: datetime, token: str, chat_id: str):
+    enviar_mensagem(f"⏳ *Kairós Engine:* Iniciando varredura estratégica para {data.strftime('%d/%m/%Y')}...", token, chat_id)
     try:
         dados = await extrair_jogos_flashscore(data)
         if not dados: return
@@ -361,9 +367,8 @@ async def rodar_analise(data: datetime):
         if not jogos: return
         heatmap = calcular_heatmap(jogos)
         power_hours = calcular_power_hours(heatmap)
-        arquivo = gerar_excel(jogos, heatmap, power_hours, calcular_alertas(jogos, power_hours), data)
+        arquivo = gerar_excel(jogos, heatmap, power_hours, calcular_alertas(jogos, power_hours), data, chat_id)
         
-        # MENSAGEM DO TELEGRAM ATUALIZADA COM TODOS OS ESPORTES
         total_jogos = len(jogos)
         futebol = sum(1 for j in jogos if j['e'] == 'Futebol')
         basquete = sum(1 for j in jogos if j['e'] == 'Basquete')
@@ -389,23 +394,24 @@ async def rodar_analise(data: datetime):
             
         msg_telegram += f"\n📊 Planilha enviada abaixo!"
         
-        enviar_mensagem(msg_telegram)
-        enviar_arquivo(arquivo)
+        enviar_mensagem(msg_telegram, token, chat_id)
+        enviar_arquivo(arquivo, token, chat_id)
         
-    except Exception as e: enviar_mensagem(f"❌ Erro: {e}")
+    except Exception as e: 
+        enviar_mensagem(f"❌ Erro interno: {e}", token, chat_id)
 
 # =============================================
-# 6. NOVO MOTOR: SERVIDOR DE COMANDOS LOCAL (LOCALHOST E NUVEM)
+# 5. NOVO MOTOR: SERVIDOR DE COMANDOS (MULTIPLAYER)
 # =============================================
-async def processar_comando_painel(data_cmd):
+async def processar_comando_painel(data_cmd, token, chat_id):
     data_cmd = data_cmd.lower().strip()
-    print(f"🔌 Sinal recebido do Painel Kairós: Varre data -> {data_cmd}")
+    print(f"🔌 Sinal recebido: Data -> {data_cmd} | Destino -> {chat_id}")
     if data_cmd == "hoje": dt = datetime.now()
     elif data_cmd in ["amanha", "amanhã"]: dt = datetime.now() + timedelta(days=1)
     else:
         try: dt = datetime.strptime(data_cmd, "%d/%m/%Y")
         except: return
-    await rodar_analise(dt)
+    await rodar_analise(dt, token, chat_id)
 
 class LocalCommandHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
@@ -417,38 +423,50 @@ class LocalCommandHandler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Private-Network', 'true')
         self.end_headers()
     def do_GET(self):
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Private-Network', 'true')
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
         parsed_url = urlparse(self.path)
         if parsed_url.path == "/analisar":
             query = parse_qs(parsed_url.query)
             data_param = query.get('data', ['hoje'])[0]
-            asyncio.run_coroutine_threadsafe(processar_comando_painel(data_param), o_loop)
-            self.wfile.write(b'{"status": "iniciado"}')
+            token_param = query.get('token', [''])[0]
+            chat_id_param = query.get('chat_id', [''])[0]
+
+            # Validação Multiplayer: O cliente deve enviar o Token e ID pelo Kairos
+            if not token_param or not chat_id_param:
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Access-Control-Allow-Origin', '*')
+                self.end_headers()
+                self.wfile.write(b'{"status": "erro", "mensagem": "Token ou Chat ID faltando. Configure no Painel Kairos."}')
+                return
+
+            self.send_response(200)
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+
+            # Dispara a varredura em segundo plano usando as credenciais do cliente
+            asyncio.run_coroutine_threadsafe(processar_comando_painel(data_param, token_param, chat_id_param), o_loop)
+            self.wfile.write(b'{"status": "iniciado", "mensagem": "Varredura Kair\u00f3s disparada com sucesso."}')
 
 def iniciar_servidor_local():
-    # PUXA A PORTA DINÂMICA DA NUVEM (Ex: Render) OU USA 5000 SE FOR LOCAL
     porta = int(os.environ.get("PORT", 5000))
-    # 0.0.0.0 PERMITE ACESSO EXTERNO NA NUVEM
     server = HTTPServer(('0.0.0.0', porta), LocalCommandHandler)
-    print(f"🔌 Servidor de Integração Kairós rodando na porta {porta}!")
+    print(f"🔌 Servidor Kairós Engine rodando na porta {porta}!")
     server.serve_forever()
 
 # =============================================
-# LOOP TELEGRAM (MANTIDO COMO BACKUP)
+# LOOP DE BACKUP (APENAS PARA O DESENVOLVEDOR)
 # =============================================
 async def escutar_telegram():
     global o_loop
     o_loop = asyncio.get_running_loop()
     threading.Thread(target=iniciar_servidor_local, daemon=True).start()
-    print("🤖 Bot Kairós Online e integrado ao Painel! Aguardando cliques...")
+    print("🤖 Bot Kairós Online! Modo Engine Multiplayer Ativado.")
     ultimo_update = 0
     while True:
         try:
-            url = f"https://api.telegram.org/bot{TOKEN_TELEGRAM}/getUpdates"
+            # Esse bloco ouve comandos no Telegram APENAS para as suas variáveis globais (Admin)
+            url = f"https://api.telegram.org/bot{TOKEN_ADMIN}/getUpdates"
             resp = await o_loop.run_in_executor(None, lambda: requests.get(url, params={"offset": ultimo_update + 1, "timeout": 30}, timeout=35).json())
             for upd in resp.get("result", []):
                 ultimo_update = upd["update_id"]
@@ -457,8 +475,8 @@ async def escutar_telegram():
                     partes = texto.split(" ")
                     if len(partes) > 1:
                         cmd = partes[1].strip()
-                        if cmd == "hoje": await rodar_analise(datetime.now())
-                        elif cmd in ["amanha", "amanhã"]: await rodar_analise(datetime.now() + timedelta(days=1))
+                        if cmd == "hoje": await rodar_analise(datetime.now(), TOKEN_ADMIN, CHAT_ID_ADMIN)
+                        elif cmd in ["amanha", "amanhã"]: await rodar_analise(datetime.now() + timedelta(days=1), TOKEN_ADMIN, CHAT_ID_ADMIN)
         except: pass
         await asyncio.sleep(1)
 
